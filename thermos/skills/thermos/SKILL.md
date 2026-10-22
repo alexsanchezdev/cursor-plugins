@@ -15,6 +15,7 @@ Run the two thermo review passes as async background subagents in parallel, then
 3. Launch both subagents in the same message with `run_in_background: true`:
    - `subagent_type: "thermo-nuclear-review-subagent"` for bugs, breakages, security, devex regressions, feature-flag leaks, and other branch-audit risks.
    - `subagent_type: "thermo-nuclear-code-quality-review-subagent"` for maintainability, structure, file-size growth, spaghetti, abstractions, and codebase-health risks.
+   - If those named subagent types aren't available (for example in Codex or another host), spawn two general-purpose subagents instead and tell one to load and follow the `thermo-nuclear-review` skill and the other the `thermo-nuclear-code-quality-review` skill. If subagents aren't available at all, run both reviews yourself, one after the other.
 4. Pass each subagent the same scoped diff/file context and ask it to return prioritized findings with file references and evidence.
 5. After both finish, synthesize the results with findings first, deduplicated across reviewers. Weight overlapping findings more heavily, resolve disagreements with your own judgment, and keep summaries brief.
 
