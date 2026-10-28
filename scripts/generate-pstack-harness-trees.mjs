@@ -7,20 +7,38 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PSTACK = join(ROOT, "pstack");
 const SKILLS = join(PSTACK, "skills");
-// Outside pstack/ so Cursor, which copies the whole plugin folder, does not install this tree too.
+// Outside pstack/ so Cursor, which copies the whole plugin folder, does not install these trees too.
 const OUT = join(ROOT, "harness", "pstack");
-const TREE = "claude-code";
-const ADAPTER = "docs/harness/claude-code.md";
 const GUIDE = "docs/guide";
-const MANIFESTS = ["plugin.json", ".claude-plugin/plugin.json"];
+const MANIFEST = join(PSTACK, "plugin.json");
+// Codex reads skills only from the folder its manifest names.
+const codexManifest = () => {
+  const manifest = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  delete manifest.$schema;
+  return Buffer.from(`${JSON.stringify({ ...manifest, skills: "./skills/" }, null, 2)}\n`);
+};
+const HARNESSES = [
+  {
+    tree: "claude-code",
+    host: "Claude Code",
+    adapter: "docs/harness/claude-code.md",
+    manifests: { "plugin.json": () => readFileSync(MANIFEST), ".claude-plugin/plugin.json": () => readFileSync(MANIFEST) },
+  },
+  {
+    tree: "codex",
+    host: "Codex",
+    adapter: "docs/harness/codex.md",
+    manifests: { ".codex-plugin/plugin.json": codexManifest },
+  },
+];
 const COMMAND = "node scripts/generate-pstack-harness-trees.mjs";
 const GITHUB = "https://github.com/cursor/plugins";
 const LINK = /\]\(([^)\s]+)\)/g;
-const README = `# pstack harness tree
+const README = `# pstack harness trees
 
-This folder is generated from \`pstack/skills\`, \`pstack/agents\`, \`pstack/${GUIDE}\`, \`pstack/${ADAPTER}\`, \`pstack/README.md\`, \`pstack/LICENSE\`, and \`pstack/plugin.json\`. Do not edit it by hand.
+These folders are generated from \`pstack/skills\`, \`pstack/agents\`, \`pstack/${GUIDE}\`, \`pstack/docs/harness\`, \`pstack/README.md\`, \`pstack/LICENSE\`, and \`pstack/plugin.json\`. Do not edit them by hand.
 
-Cursor uses \`pstack/\` directly, and Claude Code installs \`${TREE}/\`. The tree leaves out the rest of \`pstack/\`, such as \`pstack/automations\` and \`pstack/assets\`. A relative link to a pstack file that the tree leaves out points at that file on GitHub \`main\` instead.
+Cursor uses \`pstack/\` directly. ${HARNESSES.map(({ tree, host }) => `${host} installs \`${tree}/\``).join(", and ")}. The trees leave out the rest of \`pstack/\`, such as \`pstack/automations\` and \`pstack/assets\`. A relative link to a pstack file that a tree leaves out points at that file on GitHub \`main\` instead.
 
 After editing those sources, run \`${COMMAND}\` from the repository root and commit the result.
 `;
@@ -96,9 +114,11 @@ for (const [skill, { usesCursorNames, wrap }] of classes) {
   if (name !== skill) problems.push(`skills/${skill}/SKILL.md has name ${JSON.stringify(name ?? "")}, not its folder name ${skill}`);
   if (!SKILL_NAME.test(skill) || skill.length > 64) problems.push(`skills/${skill} is not lowercase words joined by hyphens, at most 64 characters`);
 }
-const adapter = readFileSync(join(PSTACK, ADAPTER), "utf8");
-for (const [key, using] of users) {
-  if (!adapter.includes(key)) problems.push(`Claude Code adapter has no row for ${key}, used by ${using.join(", ")}`);
+for (const { host, adapter: path } of HARNESSES) {
+  const adapter = readFileSync(join(PSTACK, path), "utf8");
+  for (const [key, using] of users) {
+    if (!adapter.includes(key)) problems.push(`${host} adapter has no row for ${key}, used by ${using.join(", ")}`);
+  }
 }
 for (const problem of problems) console.log(`FAIL ${problem}`);
 if (problems.length > 0) process.exit(1);
@@ -115,26 +135,26 @@ function has(files, path) {
   return files.has(path) || [...files.keys()].some((key) => key.startsWith(`${path}/`));
 }
 
-function render() {
-  // Skills read the adapter, the guide, and the README at runtime, so Claude Code never fetches them.
+function render({ host, adapter, manifests }) {
+  // Skills read the adapter, the guide, and the README at runtime, so the host never fetches them.
   const copies = [
     ...walk(SKILLS),
     ...walk(join(PSTACK, "agents")),
     ...walk(join(PSTACK, GUIDE)),
-    join(PSTACK, ADAPTER),
+    join(PSTACK, adapter),
     join(PSTACK, "README.md"),
   ];
   const files = new Map(copies.map((path) => [relative(PSTACK, path), file(path)]));
   const line =
-    `In Claude Code, read [the Claude Code adapter](../../${ADAPTER}) once per session before you follow this skill. ` +
-    "It maps the Cursor names in pstack skills to Claude Code.";
+    `In ${host}, read [the ${host} adapter](../../${adapter}) once per session before you follow this skill. ` +
+    `It maps the Cursor names in pstack skills to ${host}.`;
   for (const [skill, { wrap }] of classes) {
     const path = `skills/${skill}/SKILL.md`;
     const text = files.get(path).bytes.toString("utf8");
     if (wrap) files.get(path).bytes = Buffer.from(text.replace(/^(# .*)\n+/m, `$1\n\n${line}\n\n`));
   }
   files.set("LICENSE", file(join(PSTACK, "LICENSE")));
-  for (const manifest of MANIFESTS) files.set(manifest, file(join(PSTACK, "plugin.json")));
+  for (const [manifest, bytes] of Object.entries(manifests)) files.set(manifest, { bytes: bytes(), executable: false });
   for (const [path, entry] of files) {
     if (!path.endsWith(".md")) continue;
     const text = entry.bytes.toString("utf8").replace(LINK, (link, href) => {
@@ -148,17 +168,19 @@ function render() {
   return files;
 }
 
-// Claude Code installs only the tree, so a relative link that works from pstack/ has to work inside the tree too.
-// Links to pstack files that the tree leaves out already point at GitHub, so a failure here is a link that leaves pstack/.
-const files = render();
+// Each host installs only its tree, so a relative link that works from pstack/ has to work inside the tree too.
+// Links to pstack files that a tree leaves out already point at GitHub, so a failure here is a link that leaves pstack/.
 const rendered = new Map([["README.md", { bytes: Buffer.from(README), executable: false }]]);
 const dangling = [];
-for (const [path, entry] of files) {
-  rendered.set(`${TREE}/${path}`, entry);
-  if (!path.endsWith(".md")) continue;
-  for (const [, href] of entry.bytes.toString("utf8").matchAll(LINK)) {
-    const target = resolve(path, href);
-    if (target && !has(files, target)) dangling.push(`harness/pstack/${TREE}/${path} links to ${href}, which is not in the tree`);
+for (const harness of HARNESSES) {
+  const files = render(harness);
+  for (const [path, entry] of files) {
+    rendered.set(`${harness.tree}/${path}`, entry);
+    if (!path.endsWith(".md")) continue;
+    for (const [, href] of entry.bytes.toString("utf8").matchAll(LINK)) {
+      const target = resolve(path, href);
+      if (target && !has(files, target)) dangling.push(`harness/pstack/${harness.tree}/${path} links to ${href}, which is not in the tree`);
+    }
   }
 }
 for (const link of dangling) console.log(`FAIL ${link}`);
